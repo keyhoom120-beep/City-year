@@ -2208,6 +2208,11 @@ function createEngine(D,{rng:rng0=Math.random}={}){
       if(c.spdDice&&A.spd>=c.spdDice[0]){const x=rolls.length*c.spdDice[1];dmg+=x;note+=` 속도 ${A.spd} · 주사위 ${rolls.length}개 +${c.spdDice[1]}=+${x}`}
       if(A.spent>0&&c.fixPer){const fp=c.fixPer+(A.focusOn?A.focus.fix:0),x=A.spent*fp;dmg+=x;note+=` 충전 ${A.spent}×${fp}=고정 +${x}`}
       if(B.shield>0){const ab=Math.min(B.shield,dmg);B.shield-=ab;dmg-=ab;note+=` 보호막−${ab}`}
+      /* 자유 수정 v4: 플레이어의 모든 적중(일반 카드·스킬·E.G.O 포함)에 고정 추가 피해 */
+      if(A.isP&&C.ch&&C.ch.modBonusEnabled&&Number.isFinite(C.ch.modBonusDamage)){
+        const bonus=Math.max(0,Math.min(1000000000,Math.floor(C.ch.modBonusDamage)));
+        if(bonus){dmg+=bonus;note+=` 자유 수정 추가 피해+${bonus}`;}
+      }
       B.hp=Math.max(0,B.hp-dmg);
       L('hit',`${A.name} → ${B.name} · ${c.n} · 명중 ${sa} vs ${B.guarding?'방어':'회피'} ${sd} · 피해 [${rolls.join(',')}]${c.b?sg(c.b):''}${note} = ${dmg}`);
       if(c.hitShield){A.shield=Math.min(CFG.shieldCap,(A.shield||0)+c.hitShield);L('kw',`  ${A.name} · 보호막 +${c.hitShield} (지금 ${A.shield})`)}
@@ -3681,7 +3686,7 @@ function startUI(E,app){
       <button class="btn primary" data-a="sim">다시 측정</button><button class="btn quiet" data-a="title">돌아가기</button>`;
   }
   /* 개인용 자유 수정 메뉴 */
-  let modOpen=false;
+  let modOpen=false, modFightOpen=false;
   const modFields=[['maxHp','최대 HP'],['hp','현재 HP'],['mindMax','추가 정신력 최대치'],['mind','현재 정신력'],['atk','공격'],['eva','회피'],['spd','속도'],['check','판정'],['money','자산'],['lv','레벨'],['xp','경험치']];
   const modNum=(ch,k)=>k in ch?ch[k]:ch.stats[k];
   /* v3: 원본 데이터에서 장비/카드/전리품 목록 생성 */
@@ -3697,6 +3702,56 @@ function startUI(E,app){
     return a.sort((a,b)=>a.item.n.localeCompare(b.item.n,'ko'));
   })();
   const modCardCatalog=Object.entries(D.cards||{}).sort((a,b)=>a[1].n.localeCompare(b[1].n,'ko'));
+  const modBossLoot=Object.entries(D.enemies||{}).filter(([id,e])=>e&&e.drop&&e.drop.n).map(([id,e])=>({id,boss:e.n,drop:e.drop})).sort((a,b)=>a.boss.localeCompare(b.boss,'ko'));
+  function modBossPanel(ch){
+    if(!ch)return '';
+    return `<hr><h3>🏆 보스 능력치 강화 전리품</h3><p class="small dim">원본 보스의 실제 드롭 효과를 적용해. 획득 기록·영구 능력치 보정·관련 카드/장비를 추가해. 일부 특수 이벤트 효과는 보스 승리 이벤트에서만 작동할 수 있어.</p>
+      <label class="field">보스 / 전리품<select data-mod-loot="boss" style="width:100%">${modBossLoot.map((x,i)=>`<option value="${i}">${esc(x.boss)} — ${esc(x.drop.n)}</option>`).join('')}</select></label>
+      <button class="btn primary" data-mod-action="boss-loot">선택한 전리품 획득</button><p class="small dim" id="modBossMessage"></p>
+      <hr><h3>⚔ 추가 데미지</h3><p class="small dim">모든 플레이어 공격의 적중마다 적용돼. 카드·스킬·E.G.O 공격 포함. 전투 도중 바꾸면 다음 전투부터 확실히 적용돼.</p>
+      <label class="field"><input type="checkbox" data-mod-bonus="enabled" ${ch.modBonusEnabled?'checked':''}> 추가 피해 활성화</label>
+      <label class="field">적중마다 추가 피해<input type="number" min="0" max="1000000000" step="1" data-mod-bonus="amount" value="${Math.max(0,Number(ch.modBonusDamage)||0)}"></label>
+      <button class="btn primary" data-mod-action="bonus-save">추가 피해 적용 및 저장</button><p class="small dim" id="modBonusMessage"></p>`;
+  }
+  function modSaveBonus(){
+    if(!G||!G.ch)return false;
+    const en=app.querySelector('[data-mod-bonus="enabled"]');
+    const inp=app.querySelector('[data-mod-bonus="amount"]');
+    if(!en||!inp)return false;
+    const n=Number(inp.value);
+    if(!Number.isSafeInteger(n)||n<0||n>1000000000){alert('추가 피해는 0~10억 사이의 정수로 입력해 줘.');return false;}
+    G.ch.modBonusEnabled=en.checked;G.ch.modBonusDamage=n;
+    modPersist();return true;
+  }
+  function modGrantBossLoot(){
+    if(!G||!G.ch)return;
+    const i=Number(app.querySelector('[data-mod-loot="boss"]')?.value),entry=modBossLoot[i];
+    if(!entry)return;
+    const ch=G.ch,drop=entry.drop;
+    /* 게임 본래 보스 드롭의 영구 스탯 효과와 획득 기록 */
+    ch.relics=ch.relics||[];ch.relics.push('전리품 · '+drop.n);
+    ch.modBossLoot=ch.modBossLoot||[];ch.modBossLoot.push(entry.id);
+    if(drop.fx)for(const [k,v] of Object.entries(drop.fx)){
+      if(typeof v==='number'&&Number.isFinite(v)){
+        if(typeof ch.stats?.[k]==='number')ch.stats[k]+=v;
+        else if(typeof ch[k]==='number')ch[k]+=v;
+        else {ch.stats=ch.stats||{};ch.stats[k]=v;}
+        if(k==='maxHp')ch.hp=Math.min(ch.stats.maxHp,(ch.hp||0)+v);
+      }
+    }
+    if(drop.gear)(ch.stash=ch.stash||[]).push(structuredClone(drop.gear));
+    if(drop.card)(ch.side=ch.side||[]).push(drop.card);
+    if(Array.isArray(drop.cards))for(const id of drop.cards)(ch.side=ch.side||[]).push(id);
+    if(Array.isArray(drop.extra))for(const ex of drop.extra){
+      ch.relics.push('전리품 · '+ex.n);
+      if(ex.fx)for(const [k,v] of Object.entries(ex.fx))if(typeof v==='number'&&Number.isFinite(v)){
+        if(typeof ch.stats?.[k]==='number')ch.stats[k]+=v;else if(typeof ch[k]==='number')ch[k]+=v;
+      }
+    }
+    if(drop.flag){ch.flags=ch.flags||{};ch.flags[drop.flag]=true;}
+    modPersist();
+    const msg=app.querySelector('#modBossMessage');if(msg)msg.textContent=`${drop.n} 획득 완료! ${drop.e||''}`;
+  }
   function modItemPanel(ch){
     if(!ch)return '';
     const opts=(arr,fn)=>arr.map((x,i)=>`<option value="${i}">${esc(fn(x))}</option>`).join('');
@@ -3712,7 +3767,7 @@ function startUI(E,app){
   function modPanel(){
     const ch=G&&G.ch;
     const rows=ch?modFields.map(([k,label])=>`<label style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0"><span>${label}</span><input data-mod="${k}" type="number" step="1" value="${modNum(ch,k)}" style="width:130px;max-width:55%"></label>`).join(''):'<p>게임을 시작하거나 이어하기를 누른 뒤 수정할 수 있어.</p>';
-    return `<div id="modOverlay" style="position:fixed;inset:0;background:#000b;z-index:99999;display:flex;align-items:center;justify-content:center;padding:14px"><div style="background:#1c1e25;color:#eee;border:1px solid #bda66e;border-radius:12px;padding:18px;width:min(430px,100%);max-height:85vh;overflow:auto"><h2 style="margin:0 0 10px">자유 수정 메뉴</h2><p style="font-size:12px">수정 전 세이브 백업을 권장해. 전투 중에는 상대 상태이상만 수정할 수 있어.</p>${rows}${modExtra(ch)}${modItemPanel(ch)}${UI.screen==='combat'?modCombatPanel():''}<div style="display:flex;gap:8px;margin-top:16px">${ch?'<button class="btn primary" data-mod-action="save">적용 및 저장</button>':''}<button class="btn" data-mod-action="close">닫기</button></div></div></div>`;
+    return `<div id="modOverlay" style="position:fixed;inset:0;background:#000b;z-index:99999;display:flex;align-items:center;justify-content:center;padding:14px"><div style="background:#1c1e25;color:#eee;border:1px solid #bda66e;border-radius:12px;padding:18px;width:min(430px,100%);max-height:85vh;overflow:auto"><h2 style="margin:0 0 10px">자유 수정 메뉴</h2><p style="font-size:12px">수정 전 세이브 백업을 권장해. 전투 중에는 상대 상태이상만 수정할 수 있어.</p>${rows}${modExtra(ch)}${modRelicPanel(ch)}${modItemPanel(ch)}${modBossPanel(ch)}<div style="display:flex;gap:8px;margin-top:16px">${ch?'<button class="btn primary" data-mod-action="save">적용 및 저장</button>':''}<button class="btn" data-mod-action="close">닫기</button></div></div></div>`;
   }
   const modRollKeys=[['o','출신', 'origins'],['t','재능','talents'],['f','결점','flaws'],['w','무기','weapons']];
   function birthSelect(){
@@ -3731,11 +3786,23 @@ function startUI(E,app){
   }
   const modStatus=[['bleed','출혈'],['rupture','파열'],['burn','화상'],['flame','불꽃'],['nail','못'],['stagger','흐트러짐'],['shock','충격'],['web','속박']];
   const modAff=[['','소속 없음'],['office','해결사 사무소'],['assoc','협회'],['wing','날개'],['finger','손가락'],['head','머리'],['backstreet','뒷골목 조직']];
+  const modAffChoices={office:D.orgs?.office||[],assoc:D.orgs?.assoc||[],wing:D.orgs?.wing||[],finger:D.orgs?.finger||[],head:['머리'],backstreet:['뒷골목 조직']};
+  const modAffRanks={office:['소속원','선임','사무소장'],assoc:['협회원','팀장','부장','협회장'],wing:['사원','대리','과장','부장','임원'],finger:['조직원','간부','고위 간부'],head:['직원','간부'],backstreet:['조직원','간부','두목']};
   function modExtra(ch){
     if(!ch)return '';
-    const aff=ch.aff||{};
-    return `<hr><h3>직급 · 소속</h3><label class="field">해결사 자격<select data-mod-extra="licensed"><option value="0" ${!ch.licensed?'selected':''}>없음</option><option value="1" ${ch.licensed?'selected':''}>있음</option></select></label><label class="field">해결사 등급 (1~9)<input data-mod-extra="rank" type="number" min="1" max="9" value="${ch.rank||9}"></label><label class="field">소속 종류<select data-mod-extra="afftype">${modAff.map(([v,n])=>`<option value="${v}" ${aff.type===v?'selected':''}>${n}</option>`).join('')}</select></label><label class="field">소속 이름<input data-mod-extra="affname" maxlength="50" value="${esc(aff.name||'')}" placeholder="예: 원하는 날개 / 협회 이름"></label><hr><h3>E.G.O</h3><label class="field">발현 종류<select data-mod-extra="ego"><option value="none" ${!ch.ego?'selected':''}>없음</option><option value="atk" ${ch.ego&&ch.ego.type==='atk'?'selected':''}>공격형</option><option value="def" ${ch.ego&&ch.ego.type==='def'?'selected':''}>방어형</option></select></label><label class="field">E.G.O 이름<input data-mod-extra="egoname" maxlength="40" value="${esc(ch.ego?.n||'')}" placeholder="원하는 이름"></label><p class="small dim">E.G.O는 게임에 구현된 공격형·방어형 발현을 선택해. 이름을 지정할 수 있어.</p>`;
+    const aff=ch.aff||{},typ=aff.type||'',names=modAffChoices[typ]||[],ranks=modAffRanks[typ]||['소속원'];
+    const nameOptions=(names.includes(aff.name)?names:[...names,...(aff.name?[aff.name]:[])]).map(n=>`<option value="${esc(n)}" ${n===aff.name?'selected':''}>${esc(n)}</option>`).join('');
+    return `<hr><h3>직급 · 소속</h3><p class="small dim">게임의 기존 소속 목록에서 선택해. 소속 관련 사건은 원본 게임의 조건에 따라 발생하므로 모든 스토리 분기가 보장되지는 않아.</p>
+    <label class="field">해결사 자격<select data-mod-extra="licensed"><option value="0" ${!ch.licensed?'selected':''}>없음</option><option value="1" ${ch.licensed?'selected':''}>있음</option></select></label>
+    <label class="field">해결사 등급<select data-mod-extra="rank">${Array.from({length:9},(_,i)=>`<option value="${i+1}" ${(ch.rank||9)===i+1?'selected':''}>${i+1}급</option>`).join('')}</select></label>
+    <label class="field">소속 종류<select data-mod-extra="afftype">${modAff.map(([v,n])=>`<option value="${v}" ${typ===v?'selected':''}>${n}</option>`).join('')}</select></label>
+    <label class="field">소속 선택<select data-mod-extra="affname"><option value="">선택 안 함</option>${nameOptions}</select></label>
+    <label class="field">소속 직급<select data-mod-extra="affrank">${ranks.map((n,i)=>`<option value="${i}" ${(aff.modRank||0)===i?'selected':''}>${esc(n)}</option>`).join('')}</select></label>
+    <hr><h3>E.G.O</h3><label class="field">발현 종류<select data-mod-extra="ego"><option value="none" ${!ch.ego?'selected':''}>없음</option><option value="atk" ${ch.ego&&ch.ego.type==='atk'?'selected':''}>공격형</option><option value="def" ${ch.ego&&ch.ego.type==='def'?'selected':''}>방어형</option></select></label><label class="field">E.G.O 이름<input data-mod-extra="egoname" maxlength="40" value="${esc(ch.ego?.n||'')}"></label>`;
   }
+  const modRelicCatalog=Object.entries(D.relics||{}).sort((a,b)=>a[1].n.localeCompare(b[1].n,'ko'));
+  function modRelicPanel(ch){return ch?`<hr><h3>🔮 유물 자유 획득</h3><p class="small dim">예지안 관련 유물이 있으면 목록에서 선택해. 원본 유물 지급 함수를 사용해.</p><label class="field">유물<select data-mod-relic="id">${modRelicCatalog.map(([id,r])=>`<option value="${esc(id)}">${esc(r.n)} — ${esc(r.e||'')}</option>`).join('')}</select></label><button class="btn primary" data-mod-action="relic-grant">유물 획득</button><p class="small dim" id="modRelicMessage"></p>`:'';}
+  function modFightPanel(){return `<div id="modFightOverlay" style="position:fixed;inset:0;background:#000c;z-index:99999;display:flex;align-items:center;justify-content:center;padding:14px"><div style="background:#1c1e25;color:#eee;border:1px solid #d27777;border-radius:12px;padding:18px;width:min(430px,100%);max-height:85vh;overflow:auto"><h2>⚔ 전투 치트</h2>${UI.screen==='combat'?modCombatPanel():'<p>전투 중에만 상태이상 및 즉시 처치를 사용할 수 있어.</p>'}<hr><h3>추가 데미지</h3><label class="field"><input type="checkbox" data-mod-bonus="enabled" ${G?.ch?.modBonusEnabled?'checked':''}> 추가 피해 활성화</label><label class="field">적중마다 추가 피해<input type="number" min="0" max="1000000000" data-mod-bonus="amount" value="${G?.ch?.modBonusDamage||0}"></label><button class="btn primary" data-mod-action="bonus-save">추가 피해 저장</button><p id="modBonusMessage" class="small dim"></p><button class="btn" data-mod-action="fight-close">닫기</button></div></div>`;}
   function modCombatPanel(){
     if(!C||!C.E)return '<p>현재 전투가 없어.</p>';
     return `<h3>상대 상태이상 조작</h3><p class="small">상대: ${esc(C.E.name)} · 현재 HP ${C.E.hp}</p>${modStatus.map(([k,n])=>`<label style="display:flex;justify-content:space-between;margin:7px 0"><span>${n}</span><input data-mod-status="${k}" type="number" min="0" max="99999" value="${C.E[k]||0}" style="width:110px"></label>`).join('')}<button class="btn primary" data-mod-action="status-save">상대에게 적용</button><hr><button class="btn primary" data-mod-action="instant-win" style="background:#7c2929;color:white">⚔ 상대 즉시 처치 (승리 처리)</button><p class="small dim">승리 보상은 전투 결과 보기에서 정상적으로 지급돼.</p>`;
@@ -3754,6 +3821,9 @@ function startUI(E,app){
     if(!document.getElementById('modFloat')){const mb=document.createElement('button');mb.id='modFloat';mb.textContent='✎ 수정';mb.style.cssText='position:fixed;right:12px;bottom:76px;z-index:9000;background:#302b20;color:#ffe2a1;border:1px solid #bda66e;border-radius:20px;padding:10px 14px;font-weight:bold';mb.onclick=()=>{modOpen=true;render()};document.body.appendChild(mb)}
     document.getElementById('modFloat').style.display=modOpen?'none':'block';
     if(modOpen)app.insertAdjacentHTML('beforeend',modPanel());
+    if(!document.getElementById('modFightFloat')){const fb=document.createElement('button');fb.id='modFightFloat';fb.textContent='⚔ 전투';fb.style.cssText='position:fixed;left:12px;bottom:76px;z-index:9000;background:#602e35;color:white;border:1px solid #dc9a9a;border-radius:20px;padding:10px 14px;font-weight:bold';fb.onclick=()=>{modOpen=false;modFightOpen=true;render()};document.body.appendChild(fb)}
+    document.getElementById('modFightFloat').style.display=UI.screen==='combat'&&!modFightOpen?'block':'none';
+    if(modFightOpen)app.insertAdjacentHTML('beforeend',modFightPanel());
     if(ov&&ovKey!==UI.lastOv){const sh=app.querySelector('.sheet');if(sh)anim(sh,'bagopen',420)}
     UI.lastOv=ovKey;document.documentElement.classList.toggle('ovopen',!!ov);
     const lg=$('log');if(lg)lg.scrollTop=lg.scrollHeight;
@@ -4034,9 +4104,21 @@ function startUI(E,app){
   app.addEventListener('input',e=>{if(e.target.id==='nm'&&BC)BC.name=e.target.value.trim().slice(0,12);
     if(e.target.id==='cardq'){(UI.cf=UI.cf||{}).q=e.target.value.trim();const l=$('cardlist');if(l)l.innerHTML=cardListHtml()}});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&UI.bag){UI.bag=null;render()}});
-  app.addEventListener('change',e=>{if(e.target.matches('[data-birth-mod]')){const k=e.target.dataset.birthMod;const list=D[modRollKeys.find(x=>x[0]===k)[2]];const i=Number(e.target.value);const roll=app.querySelector(`[data-birth-roll="${k}"]`);if(roll)roll.value=i===0?1:list[i-1].max+1}});
+  app.addEventListener('change',e=>{if(e.target.matches('[data-mod-extra="afftype"]')){const type=e.target.value;const names=modAffChoices[type]||[];const sel=app.querySelector('[data-mod-extra="affname"]');if(sel)sel.innerHTML='<option value="">선택 안 함</option>'+names.map(n=>'<option value="'+esc(n)+'">'+esc(n)+'</option>').join('');const rank=app.querySelector('[data-mod-extra="affrank"]');if(rank)rank.innerHTML=(modAffRanks[type]||['소속원']).map((n,i)=>'<option value="'+i+'">'+esc(n)+'</option>').join('');}if(e.target.matches('[data-birth-mod]')){const k=e.target.dataset.birthMod;const list=D[modRollKeys.find(x=>x[0]===k)[2]];const i=Number(e.target.value);const roll=app.querySelector(`[data-birth-roll="${k}"]`);if(roll)roll.value=i===0?1:list[i-1].max+1}});
   app.addEventListener('click',e=>{
     const mb=e.target.closest('[data-mod-action]');
+    if(mb&&mb.dataset.modAction==='fight-close'){modFightOpen=false;render();return;}
+    if(mb&&mb.dataset.modAction==='relic-grant'){
+      if(!G?.ch)return;const id=app.querySelector('[data-mod-relic="id"]')?.value;
+      if(!D.relics[id])return;
+      if((G.ch.relicIds||[]).includes(id)){const el=app.querySelector('#modRelicMessage');if(el)el.textContent='이미 획득한 유물이야.';return;}
+      E.giveRelic(G.ch,id,true);modPersist();const el=app.querySelector('#modRelicMessage');if(el)el.textContent=D.relics[id].n+' 획득 완료';return;
+    }
+    if(mb&&mb.dataset.modAction==='boss-loot'){modGrantBossLoot();return;}
+    if(mb&&mb.dataset.modAction==='bonus-save'){
+      if(modSaveBonus()){const msg=app.querySelector('#modBonusMessage');if(msg)msg.textContent='추가 피해 저장 완료';}
+      return;
+    }
     if(mb&&['spawn-gear','spawn-card'].includes(mb.dataset.modAction)){
       if(!G||!G.ch)return;
       const ch=G.ch;
@@ -4058,19 +4140,20 @@ function startUI(E,app){
       if(!C||C.over||UI.screen!=='combat'||PLAYING)return;
       C.E.hp=0;C.over='win';C.evs=[];UI.sel=[];
       if(UI.autoTimer){clearTimeout(UI.autoTimer);UI.autoTimer=null;}
-      modOpen=false;render();return;
+      modOpen=false;modFightOpen=false;render();return;
     }
     if(mb&&mb.dataset.modAction==='birth-apply'){applyBirthRolls();return}
     if(mb&&mb.dataset.modAction==='status-save'){
       if(C&&C.E)for(const el of app.querySelectorAll('[data-mod-status]')){const v=Number(el.value);if(Number.isInteger(v)&&v>=0&&v<=99999)C.E[el.dataset.modStatus]=v}
-      modOpen=false;render();return;
+      modOpen=false;modFightOpen=false;render();return;
     }
     if(mb){if(mb.dataset.modAction==='save'&&G&&G.ch&&UI.screen!=='combat'){
       const ch=G.ch;
+      if(!modSaveBonus())return;
       for(const el of app.querySelectorAll('[data-mod]')){const k=el.dataset.mod,v=Number(el.value);if(!Number.isFinite(v)||!Number.isInteger(v)||Math.abs(v)>1000000000)continue;if(k in ch)ch[k]=v;else ch.stats[k]=v}
       const get=k=>app.querySelector(`[data-mod-extra="${k}"]`)?.value;
       ch.licensed=get('licensed')==='1';ch.rank=Math.min(9,Math.max(1,Number(get('rank'))||9));
-      const at=get('afftype'),an=(get('affname')||'').trim();ch.aff=at?{...(ch.aff||{}),type:at,name:an||modAff.find(x=>x[0]===at)?.[1]||at}:null;
+      const at=get('afftype'),an=(get('affname')||'').trim();ch.aff=at?{...(ch.aff||{}),type:at,name:an||modAffChoices[at]?.[0]||at,modRank:Number(get('affrank'))||0}:null;
       const et=get('ego'),en=(get('egoname')||'').trim();
       if(et==='none'){ch.ego=null}else if(et==='atk'||et==='def'){
         if(!ch.ego){E.setEgo(ch,et,en||'나의 E.G.O')}
